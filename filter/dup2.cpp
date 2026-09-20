@@ -713,14 +713,18 @@ struct dup2_process { /* {{{ */
 
     void dup_print_stat(char const * s) const
     {
+        const size_t nr = nrels.load();
+        const size_t nd = ndup.load();
+        const size_t nrt = nrels_tot.load();
+        const size_t ndt = ndup_tot.load();
         fmt::print(stderr, "{}: nrels={} dup={} ({:.2f}%) rem={}\n",
-                s, nrels, ndup,
-                100.0 * double_ratio(ndup, nrels),
-                nrels - ndup);
+                s, nr, nd,
+                100.0 * double_ratio(nd, nr),
+                nr - nd);
         fmt::print(stderr, "Total so far: nrels={} dup={} ({:.2f}%) rem={}\n",
-                nrels_tot, ndup_tot,
-                100.0 * double_ratio(ndup_tot, nrels_tot),
-                nrels_tot - ndup_tot);
+                nrt, ndt,
+                100.0 * double_ratio(ndt, nrt),
+                nrt - ndt);
     }
 
     template<typename ab_type>
@@ -785,33 +789,36 @@ struct dup2_process { /* {{{ */
     } /* }}} */
 
     void final_stats() { /* {{{ */
+        const size_t nrt = nrels_tot.load();
+        const size_t ndt = ndup_tot.load();
+        const double c = cost.load();
         fmt::print(stderr, "At the end: {} remaining relations\n",
-                nrels_tot - ndup_tot);
+                nrt - ndt);
 
         fmt::print(stderr,
                 "At the end: hash table is {:1.2f}% full\n"
                 "            hash table cost: {:1.2f} per relation\n",
-                100.0 * double_ratio(nrels_tot - ndup_tot, K),
-                1.0 + double_ratio(cost, nrels_tot));
+                100.0 * double_ratio(nrt - ndt, K),
+                1.0 + double_ratio(c, nrt));
         fmt::print(stderr,
                 "  [found {} true duplicates on sample of {} relations]\n",
                 sanity_collisions, sanity_checked);
 
         if (nrels_already_renumbered == 0) {
-            if (nrels_tot != nrels_expected) {
+            if (nrt != nrels_expected) {
                 fmt::print(stderr,
                         "Warning: number of relations read ({}) does not match"
                         " the number of relations expected ({})\n",
-                        nrels_tot, nrels_expected);
+                        nrt, nrels_expected);
             }
         } else {
             /* when we have renumbered files, we know that we won't have the
              * total number of relations... */
-            if (nrels_tot > nrels_expected) {
+            if (nrt > nrels_expected) {
                 fmt::print(stderr,
                         "Warning: number of relations read ({}) exceeds"
                         " the number of relations expected ({})\n",
-                        nrels_tot, nrels_expected);
+                        nrt, nrels_expected);
             }
         }
     } /* }}} */
