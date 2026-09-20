@@ -83,6 +83,7 @@ set(las_multi_a_sources
         bucket.cpp
         las-config.cpp
         las-fill-in-buckets.cpp
+        las-reduce-plattice.cpp
         las-downsort.cpp
         las-smallsieve.cpp
         siqs-smallsieve.cpp

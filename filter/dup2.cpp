@@ -62,7 +62,10 @@
 #include <utility>
 #include <vector>
 #include <algorithm>
+#include <atomic>
+#include <mutex>
 #include <ostream>
+#include <thread>
 
 #include <memory>
 
@@ -279,8 +282,7 @@ struct dup2_process { /* {{{ */
         K = 100 + nrels_expected + (nrels_expected / 5);
         K = uint64_nextprime(K);
 
-        H = std::make_unique<uint32_t[]>(K);
-        std::fill_n(H.get(), K, 0);
+        H = std::make_unique<std::atomic<uint32_t>[]>(K);
         fmt::print(stderr, "Allocated hash table of {} entries ({})\n",
                 K, size_disp(K * sizeof(uint32_t)));
 
@@ -294,23 +296,24 @@ struct dup2_process { /* {{{ */
     }
 
 
-    std::unique_ptr<uint32_t[]> H;   /* H contains the hash table */
+    std::unique_ptr<std::atomic<uint32_t>[]> H;   /* H contains the hash table */
     size_t K = 0; /* Size of the hash table */
     unsigned long nrels_expected = 0;
 
-    double cost = 0.0; /* Cost to insert all rels in the hash table */
+    std::atomic<double> cost { 0.0 }; /* Cost to insert all rels in the hash table */
 
     /* Number of duplicates and rels on the current file */
-    size_t ndup = 0;
-    size_t nrels = 0;
+    std::atomic<size_t> ndup { 0 };
+    std::atomic<size_t> nrels { 0 };
 
     /* Number of duplicates and rels on all read files */
-    size_t ndup_tot = 0;
-    size_t nrels_tot = 0;
+    std::atomic<size_t> ndup_tot { 0 };
+    std::atomic<size_t> nrels_tot { 0 };
     size_t nrels_already_renumbered = 0;
 
     /* {{{ sanity check: we store (a,b) pairs for 0 <= i < sanity_size,
        and check for hash collisions */
+    std::mutex sample_lock;
     std::vector<std::pair<cxx_mpz, cxx_mpz>> sanity_ab;
     unsigned long sanity_checked = 0;
     unsigned long sanity_collisions = 0;
@@ -319,6 +322,7 @@ struct dup2_process { /* {{{ */
     {
         if (i >= sanity_ab.size())
             return;
+        std::lock_guard<std::mutex> lk(sample_lock);
         sanity_checked++;
         if (sanity_ab[i].first == 0) {
             sanity_ab[i].first = a;
@@ -337,13 +341,18 @@ struct dup2_process { /* {{{ */
     double factor = 1;
     void check_overfilling()
     {
-        if (cost >= factor * (double)(nrels_tot - ndup_tot)) {
-            const uint64_t nodup = nrels_tot - ndup_tot;
+        const uint64_t ntot = nrels_tot.load();
+        const uint64_t nodup = ntot - ndup_tot.load();
+        const double c = cost.load();
+        if (c >= factor * (double) nodup) {
+            std::lock_guard<std::mutex> lk(sample_lock);
+            if (c < factor * (double) nodup)
+                return;
             const double full_table = 100.0 * double_ratio(nodup, K);
             fmt::print(stderr,
                     "Warning, hash table is {:1.0f}%"
                     " full (avg cost {:1.2f})\n",
-                    full_table, double_ratio(cost, nrels_tot));
+                    full_table, double_ratio(c, ntot));
             if (full_table >= 99) {
                 fprintf(stderr, "Error, hash table is full\n");
                 exit(1);
@@ -358,9 +367,11 @@ struct dup2_process { /* {{{ */
        The value of 3 is optimal for a c130 on a 64-core node. */
     int nthreads_for_roots = 3;
 
-    /* it isn't totally clear if we need (and even if we can) increase
-     * this */
-    int nthreads_hash = 1;
+    /* Duplicate hash inserts used to be single-threaded. The table is
+     * now atomic, so we can use all cores. */
+    int nthreads_hash = std::max(1, (int) std::thread::hardware_concurrency());
+
+    std::mutex io_lock;
 
     /* {{{ compute_hash (two overloads) */
     static uint64_t compute_hash(int64_t a, uint64_t b)
@@ -407,7 +418,25 @@ struct dup2_process { /* {{{ */
 #endif
 
         double local_cost = 0;
-        while (H[i] != 0 && H[i] != j) {
+        /* Concurrent linear probing. Empty slots are 0; a CAS from 0 to j
+         * claims the cell. Seeing j already stored is a duplicate. */
+        for (;;) {
+            uint32_t observed = H[i].load(std::memory_order_relaxed);
+            if (observed == j) {
+                is_dup = true;
+                break;
+            }
+            if (observed == 0) {
+                uint32_t expected = 0;
+                if (H[i].compare_exchange_weak(expected, j,
+                            std::memory_order_relaxed,
+                            std::memory_order_relaxed)) {
+                    is_dup = false;
+                    break;
+                }
+                /* Lost the race for this cell; retry it. */
+                continue;
+            }
             i++;
             if (UNLIKELY(i == K))
                 i = 0;
@@ -424,13 +453,10 @@ struct dup2_process { /* {{{ */
          * For m=2e8, the largest block can have up to length 938,
          * thus it is not surprising to have local_cost > 100. */
 
-        cost += local_cost;
+        cost.fetch_add(local_cost, std::memory_order_relaxed);
 
         /* Note: since we use 0 for uninitialized entries, entries with
          * j=0 will get always marked as 'duplicate' and be lost. */
-
-        is_dup = H[i] == j;
-        H[i] = j;
 
 #ifdef TRACE_HASH_TABLE
         if (i == TRACE_I && j == TRACE_J) {
@@ -469,7 +495,7 @@ struct dup2_process { /* {{{ */
                     " function or to an actual duplicate\n"
                     "relation. If it appears often you should check the"
                     " input set of relations.\n\n",
-                    rel.a, rel.b, i, H[i]);
+                    rel.a, rel.b, i, H[i].load());
         }
 
         sanity_check(i, rel.a, rel.b);
@@ -677,6 +703,7 @@ struct dup2_process { /* {{{ */
         if (!is_dup) {
             sanity_check(i, irel.a, irel.b);
             check_overfilling();
+            std::lock_guard<std::mutex> lk(io_lock);
             fmt::print(out, "{}\n", irel);
         } else {
             ndup++;
@@ -714,11 +741,13 @@ struct dup2_process { /* {{{ */
                 >
             >;
         fmt::print(stderr, "Reading new files (using {} auxiliary threads for "
-                "roots mod p):\n", nthreads_for_roots);
+                "roots mod p, {} for the duplicate hash):\n",
+                nthreads_for_roots, nthreads_hash);
         for(auto const & f : files) {
             auto [ oname, oname_tmp ] = output.get_outfilename_from_infilename(f);
             ofstream_maybe_compressed out(oname_tmp);
-            nrels = ndup = 0;
+            nrels.store(0);
+            ndup.store(0);
 
             using cado::filter_io_details::multithreaded_call;
 

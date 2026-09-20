@@ -70,9 +70,12 @@
 #include <cstring>
 
 #include <algorithm>
-#include <string>
 #include <limits>
+#include <ostream>
+#include <string>
+#include <thread>
 
+#include "cado-endian.h"
 #include "fmt/base.h"
 #include "fmt/format.h"
 #include "fmt/ostream.h"
@@ -86,12 +89,48 @@
 #include "params.hpp"
 #include "portability.h"
 #include "purge_matrix.hpp"
+#include "purgedfile.h"
 #include "timing.h"
 #include "typedefs.h"
 #include "utils_cxx.hpp"
 #include "verbose.hpp"
 
-// #define TRACE_J 0x5b841 /* trace column J */
+namespace {
+void wr_le32(std::ostream & o, uint32_t v)
+{
+#ifdef CADO_LITTLE_ENDIAN
+    o.write(reinterpret_cast<char const *>(&v), 4);
+#else
+    unsigned char b[4] = {
+        (unsigned char) v,
+        (unsigned char) (v >> 8),
+        (unsigned char) (v >> 16),
+        (unsigned char) (v >> 24)
+    };
+    o.write(reinterpret_cast<char const *>(b), 4);
+#endif
+}
+
+void wr_le64(std::ostream & o, uint64_t v)
+{
+    wr_le32(o, (uint32_t) v);
+    wr_le32(o, (uint32_t) (v >> 32));
+}
+
+void wr_i64(std::ostream & o, int64_t v)
+{
+    wr_le64(o, (uint64_t) v);
+}
+
+void wr_index(std::ostream & o, index_t h)
+{
+#if SIZEOF_INDEX == 8
+    wr_le64(o, h);
+#else
+    wr_le32(o, h);
+#endif
+}
+} /* namespace */
 
 struct purge_output_specification { /* {{{ */
     parameter<std::string, "out", "outfile for remaining relations">
@@ -127,11 +166,14 @@ struct purge_process : purge_output_specification {
         R"(% of excess required at the end of the 1st singleton removal step)",
         CADO_STRINGIZE(DEFAULT_PURGE_REQUIRED_EXCESS)>
         required_excess;
-    parameter_with_default<int, "t", "number of threads",
+    parameter_with_default<int, "t", "number of threads (0 = hardware concurrency)",
                            CADO_STRINGIZE(DEFAULT_PURGE_NTHREADS)>
         nthreads;
 
     parameter_switch<"v", "verbose mode"> verbose;
+    parameter_switch<"binary",
+        "write the purged file in binary CADOPURG format (also implied by a .bin output name)">
+        binary;
 
     purge_matrix M;
 
@@ -144,6 +186,7 @@ struct purge_process : purge_output_specification {
         decltype(required_excess)::configure(pl);
         decltype(nthreads)::configure(pl);
         decltype(verbose)::configure(pl);
+        decltype(binary)::configure(pl);
     }
     /* }}} */
     explicit purge_process(cxx_param_list & pl) /* {{{ */
@@ -153,9 +196,14 @@ struct purge_process : purge_output_specification {
         , required_excess(pl)
         , nthreads(pl)
         , verbose(pl)
+        , binary(pl)
     {
-        if (nthreads == 0)
-            pl.fail("cannot have nthreads == 0");
+        if (nthreads < 0)
+            pl.fail("cannot have nthreads < 0");
+        if (nthreads == 0) {
+            int const hw = (int) std::thread::hardware_concurrency();
+            nthreads() = hw > 0 ? hw : 1;
+        }
 
         print_information();
     }
@@ -175,9 +223,21 @@ struct purge_process : purge_output_specification {
             fmt::print("{}\n", nsteps());
         ASSERT_ALWAYS(keep >= 0);
         fmt::print("# INFO: target excess: {}\n", keep());
+        if (write_binary() && purgedname.is_provided())
+            fmt::print("# INFO: purged file format: binary CADOPURG\n");
         fflush(stdout);
     }
     /*}}}*/
+    bool write_binary() const
+    {
+        if (binary)
+            return true;
+        if (!purgedname.is_provided())
+            return false;
+        std::string const & n = purgedname();
+        return has_suffix(n.c_str(), ".bin")
+            || has_suffix(n.c_str(), ".bin.gz");
+    }
     void print_optional_weight_statistics() /* {{{ */
     {
         /* prints some stats on columns and rows weight if verbose > 0. */
@@ -272,26 +332,65 @@ struct purge_process : purge_output_specification {
             for (; bound && M.column_weights[bound - 1] == 0; bound--)
                 ;
 
-            fmt::print(out, "# {} {} {}\n", M.remaining_rows, bound,
-                       M.remaining_columns);
+            if (write_binary()) {
+                out.write(PURGEDFILE_MAGIC, 8);
+                wr_le32(out, PURGEDFILE_VERSION);
+                uint32_t flags = 0;
+#if SIZEOF_INDEX == 8
+                flags |= PURGEDFILE_FLAG_INDEX64;
+#endif
+                wr_le32(out, flags);
+                wr_le64(out, M.remaining_rows);
+                wr_le64(out, bound);
+                wr_le64(out, M.remaining_columns);
+            } else {
+                fmt::print(out, "# {} {} {}\n", M.remaining_rows, bound,
+                           M.remaining_columns);
+            }
         }
 
         /* second pass over relations in files */
-        using relation_type = cado::relation_building_blocks::line_block<
-            cado::relation_building_blocks::primecount_block<
-                cado::relation_building_blocks::ab_ignore<16>>>;
         double W = 0;
 
-        filter_rels<relation_type>(input.create_file_list(), nullptr, nullptr,
-            [&](relation_type & rel) {
-                if (M.is_active(rel.num)) {
-                    W += static_cast<double>(rel.weight);
-                    if (out.is_open())
-                    fmt::print(out, "{}\n", rel.line);
-                } else if (outdel.is_open()) {
-                    fmt::print(outdel, "{}\n", rel.line);
-                }
-            });
+        if (write_binary() && out.is_open()) {
+            using relation_type = cado::relation_building_blocks::primes_block<
+                prime_type_for_indexed_relations,
+                cado::relation_building_blocks::ab_block<uint64_t, 16>>;
+            filter_rels<relation_type>(input.create_file_list(), nullptr, nullptr,
+                [&](relation_type & rel) {
+                    if (M.is_active(rel.num)) {
+                        for (auto const & pe : rel.primes)
+                            W += (double) (pe.e < 0 ? -pe.e : pe.e);
+                        wr_i64(out, rel.a);
+                        wr_le64(out, rel.b);
+                        wr_le32(out, (uint32_t) rel.primes.size());
+                        for (auto const & pe : rel.primes)
+                            wr_index(out, pe.h);
+                        for (auto const & pe : rel.primes) {
+                            int8_t const e8 = (int8_t) pe.e;
+                            if (e8 != pe.e)
+                                throw cado::error("exponent {} does not fit in int8; use ASCII purged output", pe.e);
+                            out.write(reinterpret_cast<char const *>(&e8), 1);
+                        }
+                    } else if (outdel.is_open()) {
+                        fmt::print(outdel, "{}\n", rel);
+                    }
+                });
+        } else {
+            using relation_type = cado::relation_building_blocks::line_block<
+                cado::relation_building_blocks::primecount_block<
+                    cado::relation_building_blocks::ab_ignore<16>>>;
+            filter_rels<relation_type>(input.create_file_list(), nullptr, nullptr,
+                [&](relation_type & rel) {
+                    if (M.is_active(rel.num)) {
+                        W += static_cast<double>(rel.weight);
+                        if (out.is_open())
+                        fmt::print(out, "{}\n", rel.line);
+                    } else if (outdel.is_open()) {
+                        fmt::print(outdel, "{}\n", rel.line);
+                    }
+                });
+        }
 
         /* write final values to stdout */
         /* This output, incl. "Final values:", is required by the script */

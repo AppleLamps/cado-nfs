@@ -45,11 +45,13 @@ cado_apply_pch(merge-dl)
 add_executable(replay replay.cpp sparse.c)
 target_link_libraries(replay PRIVATE utils_with_io)
 cado_apply_pch(replay)
+mark_targets_as_openmp(replay)
 
 add_executable(replay-dl replay.cpp sparse.c)
 target_link_libraries(replay-dl PRIVATE utils_with_io)
 mark_targets_as_dl(replay-dl)
 cado_apply_pch(replay-dl)
+mark_targets_as_openmp(replay-dl)
 
 add_executable(reconstructlog-dl reconstructlog.cpp)
 target_link_libraries(reconstructlog-dl PRIVATE utils_with_io)

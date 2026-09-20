@@ -15,7 +15,7 @@
 #include <string>
 #include <type_traits>
 
-#if defined(HAVE_SSE41) && defined(HAVE_POPCNT)
+#if defined(HAVE_SSE2) || defined(HAVE_AVX2) || (defined(HAVE_SSE41) && defined(HAVE_POPCNT))
 #include <x86intrin.h>
 #endif
 
@@ -454,6 +454,24 @@ struct gf2_base
     {
         T const* tx = static_cast<T const*>(this);
         unsigned int K = tx->number_of_limbs();
+#if defined(HAVE_AVX2)
+        if (K == 4) {
+            __m256i const va = _mm256_loadu_si256(reinterpret_cast<__m256i const *>(a.data()));
+            __m256i const vb = _mm256_loadu_si256(reinterpret_cast<__m256i const *>(b.data()));
+            _mm256_storeu_si256(reinterpret_cast<__m256i *>(dst.data()),
+                                _mm256_xor_si256(va, vb));
+            return;
+        }
+#endif
+#if defined(HAVE_SSE2)
+        if (K == 2) {
+            __m128i const va = _mm_loadu_si128(reinterpret_cast<__m128i const *>(a.data()));
+            __m128i const vb = _mm_loadu_si128(reinterpret_cast<__m128i const *>(b.data()));
+            _mm_storeu_si128(reinterpret_cast<__m128i *>(dst.data()),
+                             _mm_xor_si128(va, vb));
+            return;
+        }
+#endif
         for (unsigned int i = 0; i < K; i++)
             dst.data()[i] = a.data()[i] ^ b.data()[i];
     }

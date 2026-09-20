@@ -337,15 +337,26 @@ static void alternative_reduce_scatter_parallel [[maybe_unused]] (pi_comm & xr, 
                 MPI_Request * rr = r + 2*w + 1;
                 MPI_Isend(vs[w]->rsbuf[s].get(),  eitems, t, drank, 0xb00+w, wr.pals, rs);
                 MPI_Irecv(vs[w]->rsbuf[!s].get(), eitems, t, srank, 0xb00+w, wr.pals, rr);
-                /*
-                MPI_Sendrecv(vs[w]->rsbuf[s].get(), eitems, t, drank, 0xbeef,
-                        vs[w]->rsbuf[!s].get(), eitems, t, srank, 0xbeef,
-                        wr.pals, MPI_STATUS_IGNORE);
-                        */
-                // MPI_Waitall(2, r + 2*w, MPI_STATUSES_IGNORE);
+            }
+            /* Other threads prefetch the next local strip while rank 0
+             * waits on the ring exchange. */
+            if (i + 1 < njobs) {
+                unsigned int const lnext = (rank + 2 + i) % njobs;
+                unsigned int const j0n = lnext * eitems;
+                char const * p = (char const *) ab->vec_subvec(v.sibling(0).v, j0n);
+                size_t const bytes = ab->vec_elt_stride(eitems);
+                for (size_t off = 0; off < bytes; off += 64)
+                    __builtin_prefetch(p + off, 0, 3);
             }
             MPI_Waitall(2 * xr.ncores, r, MPI_STATUSES_IGNORE);
             free(r);
+        } else if (i + 1 < njobs) {
+            unsigned int const lnext = (rank + 2 + i) % njobs;
+            unsigned int const j0n = lnext * eitems;
+            char const * p = (char const *) ab->vec_subvec(v.sibling(0).v, j0n);
+            size_t const bytes = ab->vec_elt_stride(eitems);
+            for (size_t off = 0; off < bytes; off += 64)
+                __builtin_prefetch(p + off, 0, 3);
         }
         xr.serialize_threads(__FILE__, __LINE__);
     }
@@ -626,7 +637,9 @@ static void mmt_vec_reduce_inner(mmt_vec & v)
         alternative_reduce_scatter_parallel(xr, v.wrpals[!v.d].get());
 #endif
 #elif RS_CHOICE == RS_CHOICE_MINE_OVERLAPPING
-#error "not implemented, but planned"
+        /* Overlap is implemented inside alternative_reduce_scatter_parallel
+         * (prefetch of the next strip during MPI_Waitall). */
+        alternative_reduce_scatter_parallel(xr, v.wrpals[!v.d].get());
 #endif
     }
 #else   /* MPI_LIBRARY_MT_CAPABLE */

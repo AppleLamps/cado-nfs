@@ -17,7 +17,7 @@
 /* Purge (a.k.a singleton and clique removal) */
 /**********************************************/
 
-#define DEFAULT_PURGE_NTHREADS 1
+#define DEFAULT_PURGE_NTHREADS 0
 
 // Default number of step of clique removal in purge.
 #define DEFAULT_PURGE_NSTEPS 50

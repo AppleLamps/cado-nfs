@@ -6,6 +6,9 @@
 #ifdef HAVE_SSE2
 #include <emmintrin.h>
 #endif
+#ifdef HAVE_AVX2
+#include <immintrin.h>
+#endif
 
 #include "fb-types.hpp"
 #include "bucket.hpp"
@@ -124,6 +127,48 @@ apply_one_bucket(unsigned char * S, bucket_array_t<1, HINT> const & BA,
 
         while (it != next_align)
             apply_one_update<HINT>(S, *it++, logp, w);
+
+#if defined(HAVE_AVX2) && defined(CADO_LITTLE_ENDIAN)
+        /* 32 4-byte updates = 128 bytes. Extract x = high 16 bits of
+         * each uint32 (hint is in the low 16; see shorthint layout),
+         * prefetch the sieve locations, then apply. */
+        if (sizeof(bucket_update_t<1, HINT>) == 4) {
+            while (it + 32 <= it_end) {
+#if defined(__ICC) || defined(__INTEL_COMPILER)
+                _mm_prefetch(((char const *)it) + 512, _MM_HINT_NTA);
+#else
+                _mm_prefetch(((unsigned char *)it) + 512, _MM_HINT_NTA);
+#endif
+                __m256i const v0 = _mm256_loadu_si256((__m256i const *)it);
+                __m256i const v1 = _mm256_loadu_si256((__m256i const *)it + 1);
+                __m256i const v2 = _mm256_loadu_si256((__m256i const *)it + 2);
+                __m256i const v3 = _mm256_loadu_si256((__m256i const *)it + 3);
+                it += 32;
+                __m256i xs0 = _mm256_srli_epi32(v0, 16);
+                __m256i xs1 = _mm256_srli_epi32(v1, 16);
+                __m256i xs2 = _mm256_srli_epi32(v2, 16);
+                __m256i xs3 = _mm256_srli_epi32(v3, 16);
+                /* Pack 16-bit x values down so we can store them densely.
+                 * After two packs we have 16 x's per ymm, but in the
+                 * AVX2 128-bit-lane order; storing then reading as
+                 * uint16 is simplest and still a win vs scalar extract. */
+                uint32_t tmp[32] ATTR_ALIGNED(32);
+                _mm256_store_si256((__m256i *)tmp, xs0);
+                _mm256_store_si256((__m256i *)tmp + 1, xs1);
+                _mm256_store_si256((__m256i *)tmp + 2, xs2);
+                _mm256_store_si256((__m256i *)tmp + 3, xs3);
+                for (int k = 0; k < 32; k++) {
+                    uint16_t const x = (uint16_t) tmp[k];
+                    _mm_prefetch((char const *)(S + x), _MM_HINT_T0);
+                }
+                for (int k = 0; k < 32; k++) {
+                    uint16_t const x = (uint16_t) tmp[k];
+                    WHERE_AM_I_UPDATE(w, x, x);
+                    sieve_increase(S + x, logp, w);
+                }
+            }
+        }
+#endif
 
         while (it + 16 <= it_end) {
             uint64_t x0, x1, x2, x3, x4, x5, x6, x7;

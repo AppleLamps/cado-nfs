@@ -127,6 +127,18 @@ void search_survivors_in_line_sse2_siqs(
 #endif
 
 #ifdef HAVE_AVX2
+void search_survivors_in_line_avx2(unsigned char * const SS[2],
+        const unsigned char bound[2],
+        unsigned int j, int i0, int i1,
+        int N, j_divisibility_helper const & j_div,
+        unsigned int td_max,
+        std::vector<uint32_t> &survivors);
+void search_survivors_in_line_avx2_oneside(unsigned char * const SS,
+        const unsigned char bound,
+        unsigned int j, int i0, int i1,
+        int N, j_divisibility_helper const & j_div,
+        unsigned int td_max,
+        std::vector<uint32_t> &survivors);
 void search_survivors_in_line_avx2_siqs(
         unsigned char * SS,
         unsigned char bound,

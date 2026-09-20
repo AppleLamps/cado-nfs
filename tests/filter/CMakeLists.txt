@@ -83,6 +83,15 @@ cado_define_test(test_purge_torture
     TARGET_DEPENDENCIES purge
 )
 
+cado_define_test(test_purge_torture_binary
+    PROVIDE_TEMPORARY_WDIR
+    PROGRAM
+    $<TARGET_FILE:purge> -keep 0 -binary
+    -out purged.bin
+    -required_excess 0.0 ${CMAKE_CURRENT_SOURCE_DIR}/purge_torturetest1.rels
+    TARGET_DEPENDENCIES purge
+)
+
 if (NOT DEFINED ENV{NO_PYTHON_CHECK})
 cado_define_test(test_purge_heavy_torture
     PROVIDE_TEMPORARY_WDIR
