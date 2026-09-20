@@ -1085,7 +1085,9 @@ sieve/las-process-bucket-region.hpp
 sieve/las-qlattice.cpp
 sieve/las-qlattice.hpp
 sieve/las-reduce-plattice-production-asm.hpp
+sieve/las-reduce-plattice-simd.hpp
 sieve/las-reduce-plattice-simplistic.hpp
+sieve/las-reduce-plattice.cpp
 sieve/las-report-stats.cpp
 sieve/las-report-stats.hpp
 sieve/las-side-config.cpp

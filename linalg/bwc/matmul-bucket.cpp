@@ -242,24 +242,35 @@ using namespace std;
 #define VSC_BLOCKS_FLUSHFREQ_RATIO 3
 #endif
 
-/* This parameter set is successful for 4.6M rows x 2.8 cols, 12x20
- * submatrix of the same snfs247.sparse, for 4 simultaneous cores of a
- * Xeon X3440. In effect, we're disabling large slices here, and use
- * taller steps for vsc.
+/* This parameter set is sized for 2020s cores (32–48 KiB L1D, 512 KiB–2 MiB
+ * L2, large L3). The previous X3440-oriented cutoffs (DJ_CUTOFF2=24,
+ * LSL_NBUCKETS_MAX=32) disabled large slices. Override at runtime with
+ * l1_cache_size / l2_cache_size. Changing LSL_NBUCKETS_MAX is a cache-format
+ * break, hence the magic bump below.
  */
 #if 1
+#define L1_CACHE_SIZE   49152
+#define L2_CACHE_SIZE   1048576
+#define DJ_CUTOFF1   6.0
+#define DJ_CUTOFF2   48.0
+#define LSL_NBUCKETS_MAX      256
+#define VSC_BLOCKS_ROW_BATCH 256
+#define VSC_BLOCKS_TOO_SMALL_CUTOFF     8192
+#define VSC_BLOCKS_FLUSHFREQ_RATIO 4.0
+#endif
+
+/* These used to be the cado-nfs defaults for a long time, then the X3440
+ * set that froze large slices out. Kept for reference. */
+#if 0
 #define L1_CACHE_SIZE   262144
 #define L2_CACHE_SIZE   800000
 #define DJ_CUTOFF1   8.0
-#define DJ_CUTOFF2   24.0 /* This is so small that large slices don't show up */
+#define DJ_CUTOFF2   24.0
 #define LSL_NBUCKETS_MAX      32
 #define VSC_BLOCKS_ROW_BATCH 256
 #define VSC_BLOCKS_TOO_SMALL_CUTOFF     8192
 #define VSC_BLOCKS_FLUSHFREQ_RATIO 8.0
 #endif
-
-/* These used to be the cado-nfs defaults for a long time. They are
- * visibly inferior to the previous parameters on the L5640. */
 #if 0
 #define L1_CACHE_SIZE   28000
 #define L2_CACHE_SIZE   1600000
@@ -284,7 +295,7 @@ using namespace std;
  * lower one (MM_MAGIC_VERSION) to the n-th binary incompatible change
  * (make sure to bump it) */
 #define MM_MAGIC_FAMILY        0xa003UL
-#define MM_MAGIC_VERSION       0x1015UL
+#define MM_MAGIC_VERSION       0x1016UL
 #define MM_MAGIC (MM_MAGIC_FAMILY << 16 | MM_MAGIC_VERSION)
 
 /* see matmul-basic.c */

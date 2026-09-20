@@ -10,6 +10,9 @@
 #ifdef HAVE_SSE2
 #include <emmintrin.h>
 #endif
+#ifdef HAVE_AVX2
+#include <immintrin.h>
+#endif
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -73,22 +76,48 @@ MAYBE_UNUSED static inline void subusb(unsigned char *S1, const unsigned char *S
  * and memset(S2, 0, EndS1-S1).
  */
 static void SminusS (unsigned char *S1, unsigned char *EndS1, unsigned char *S2) {/*{{{*/
-#ifndef HAVE_SSE2
-    ssize_t mysize = EndS1 - S1;
-    unsigned char *cS2 = S2;
-    while (S1 < EndS1) {
-        subusb(S1,S2,0);
-        subusb(S1,S2,1);
-        subusb(S1,S2,2);
-        subusb(S1,S2,3);
-        subusb(S1,S2,4);
-        subusb(S1,S2,5);
-        subusb(S1,S2,6);
-        subusb(S1,S2,7);
-        S1 += 8; S2 += 8;
+#if defined(HAVE_AVX2)
+    ssize_t const mysize = EndS1 - S1;
+    unsigned char * const cS2 = S2;
+    __m256i *S1i = (__m256i *) S1;
+    __m256i *EndS1i = (__m256i *) EndS1;
+    __m256i *S2i = (__m256i *) S2;
+    __m256i const z = _mm256_setzero_si256();
+    /* 4 x 32 bytes = 128 bytes per trip, matching the bucket-region
+     * alignment (see las_memory_accessor::bucket_region_size). */
+    while (S1i + 4 <= EndS1i) {
+        _mm_prefetch((char const *)(S1i + 16), _MM_HINT_T0);
+        _mm_prefetch((char const *)(S2i + 16), _MM_HINT_T0);
+        __m256i x0 = _mm256_load_si256(S1i + 0);
+        __m256i x1 = _mm256_load_si256(S1i + 1);
+        __m256i x2 = _mm256_load_si256(S1i + 2);
+        __m256i x3 = _mm256_load_si256(S1i + 3);
+        x0 = _mm256_subs_epu8(x0, _mm256_load_si256(S2i + 0));
+        x1 = _mm256_subs_epu8(x1, _mm256_load_si256(S2i + 1));
+        x2 = _mm256_subs_epu8(x2, _mm256_load_si256(S2i + 2));
+        x3 = _mm256_subs_epu8(x3, _mm256_load_si256(S2i + 3));
+        _mm256_store_si256(S2i + 0, z);
+        _mm256_store_si256(S2i + 1, z);
+        _mm256_store_si256(S2i + 2, z);
+        _mm256_store_si256(S2i + 3, z);
+        _mm256_store_si256(S1i + 0, x0);
+        _mm256_store_si256(S1i + 1, x1);
+        _mm256_store_si256(S1i + 2, x2);
+        _mm256_store_si256(S1i + 3, x3);
+        S1i += 4;
+        S2i += 4;
     }
-    memset(cS2, 0, mysize);
-#else
+    unsigned char * p1 = (unsigned char *) S1i;
+    unsigned char * p2 = (unsigned char *) S2i;
+    while (p1 < EndS1) {
+        subusb(p1, p2, 0);
+        p1++;
+        p2++;
+    }
+    /* SS is already zeroed in the AVX2 body; only the tail (if any) needs it. */
+    if ((unsigned char *) S2i < cS2 + mysize)
+        memset(S2i, 0, (cS2 + mysize) - (unsigned char *) S2i);
+#elif defined(HAVE_SSE2)
     __m128i *S1i = (__m128i *) S1, *EndS1i = (__m128i *) EndS1, *S2i = (__m128i *) S2,
             z = _mm_setzero_si128();
     while (S1i < EndS1i) {
@@ -115,25 +144,23 @@ static void SminusS (unsigned char *S1, unsigned char *EndS1, unsigned char *S2)
              "add $0x40,%0\n"
              "add $0x40,%1\n"
              : "+&r"(S1i), "+&r"(S2i), "=&x"(x0), "=&x"(x1), "=&x"(x2), "=&x"(x3) : "x"(z));
-        /* I prefer use ASM than intrinsics to be sure each 4
-         * instructions which use exactly a cache line are together. I'm
-         * 99% sure it's not useful...  but it's more beautiful :-)
-         */
-        /*
-           __m128i x0, x1, x2, x3;
-           _mm_prefetch(S1i + 16, _MM_HINT_T0); _mm_prefetch(S2i + 16, _MM_HINT_T0);
-           x0 = _mm_load_si128(S1i + 0);         x1 = _mm_load_si128(S1i + 1);
-           x2 = _mm_load_si128(S1i + 2);         x3 = _mm_load_si128(S1i + 3);
-           x0 = _mm_subs_epu8(S2i[0], x0);       x1 = _mm_subs_epu8(S2i[1], x1);
-           x2 = _mm_subs_epu8(S2i[2], x2);       x3 = _mm_subs_epu8(S2i[3], x3);
-           _mm_store_si128(S2i + 0, z);          _mm_store_si128(S1i + 1, z);
-           _mm_store_si128(S2i + 2, z);          _mm_store_si128(S1i + 3, z);
-           _mm_store_si128(S1i + 0, x0);         _mm_store_si128(S1i + 1, x1);
-           _mm_store_si128(S1i + 2, x2);         _mm_store_si128(S1i + 3, x3);
-           S1i += 4; S2i += 4;
-           */
     }
-#endif 
+#else
+    ssize_t mysize = EndS1 - S1;
+    unsigned char *cS2 = S2;
+    while (S1 < EndS1) {
+        subusb(S1,S2,0);
+        subusb(S1,S2,1);
+        subusb(S1,S2,2);
+        subusb(S1,S2,3);
+        subusb(S1,S2,4);
+        subusb(S1,S2,5);
+        subusb(S1,S2,6);
+        subusb(S1,S2,7);
+        S1 += 8; S2 += 8;
+    }
+    memset(cS2, 0, mysize);
+#endif
 }/*}}}*/
 
 struct process_bucket_region_run {/*{{{*/
@@ -199,6 +226,15 @@ struct process_bucket_region_run {/*{{{*/
      */
 
     unsigned char *SS;
+
+    /* Cofactorization used to enqueue one QUEUE_ECM task per survivor.
+     * Batching amortizes thread-pool overhead on the default resieve+ECM
+     * path. Descent / -exit-early still run synchronously. */
+    static constexpr size_t ecm_batch_size = 32;
+    std::vector<cofac_standalone> ecm_batch;
+
+    void flush_ecm_batch();
+    void enqueue_ecm(cofac_standalone && cur);
 
     struct side_data {/*{{{*/
         bucket_array_complete purged;   /* for purge_buckets */
@@ -861,25 +897,11 @@ void process_bucket_region_run::cofactoring_sync (survivors_t & survivors)/*{{{*
         }
 
         /* It is probably not a very good idea to make one task out of
-         * _each_ (a,b) pair that is to be cofactored...
+         * _each_ (a,b) pair that is to be cofactored... so we batch.
          */
 
         if (!dlp_descent && !exit_after_rel_found) {
-            /* We must make sure that we join the async threads at some
-             * point, otherwise we'll leak memory. It seems more appropriate
-             * to batch-join only, so this is done at the las_subjob level */
-
-            /* We need to _copy_ the shared_ptrs,
-             * and extend the lifetime of the corresponding objects to
-             * until when the detached cofactorization completes.
-             */
-            worker->get_pool().add_task(thread_pool::QUEUE_ECM,
-                    [wc_p = wc_p,
-                     aux_p = aux_p,
-                     cur_p = std::make_shared<cofac_standalone>(std::move(cur))
-                    ](worker_thread* w) {
-                        detached_cofac(w, *wc_p, *aux_p, std::move(*cur_p));
-                    });
+            enqueue_ecm(std::move(cur));
         } else {
             /* We must proceed synchronously for the descent */
             auto rel = detached_cofac(worker, *wc_p, *aux_p, std::move(cur));
@@ -890,7 +912,29 @@ void process_bucket_region_run::cofactoring_sync (survivors_t & survivors)/*{{{*
             }
         }
     }
+    flush_ecm_batch();
 }/*}}}*/
+
+void process_bucket_region_run::enqueue_ecm(cofac_standalone && cur)
+{
+    ecm_batch.push_back(std::move(cur));
+    if (ecm_batch.size() >= ecm_batch_size)
+        flush_ecm_batch();
+}
+
+void process_bucket_region_run::flush_ecm_batch()
+{
+    if (ecm_batch.empty())
+        return;
+    /* Copy shared_ptrs so the objects outlive this PBR task. */
+    auto batch = std::make_shared<std::vector<cofac_standalone>>(std::move(ecm_batch));
+    ecm_batch.clear();
+    worker->get_pool().add_task(thread_pool::QUEUE_ECM,
+            [wc_p = wc_p, aux_p = aux_p, batch](worker_thread * w) {
+                for (auto & cur : *batch)
+                    detached_cofac(w, *wc_p, *aux_p, std::move(cur));
+            });
+}
 void process_bucket_region_run::operator()() {/*{{{*/
     auto tt = worker->trace(chronograms::PBR(
                 first_region0_index / ws.nb_buckets[1],

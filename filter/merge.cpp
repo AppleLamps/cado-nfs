@@ -264,7 +264,10 @@ struct purged_file_reader {
     {
         FILE * f = fopen_maybe_compressed(purgedname.c_str(), "r");
         ASSERT_ALWAYS(f != NULL);
-        int t = fseek(f, 0, SEEK_END) == 0;
+        int c = fgetc(f);
+        /* Binary CADOPURG files are not newline-oriented; the parallel
+         * reader cannot split them. */
+        int t = (c != 'C') && (c != EOF) && fseek(f, 0, SEEK_END) == 0;
         fclose_maybe_compressed (f, purgedname.c_str());
         return t;
     }

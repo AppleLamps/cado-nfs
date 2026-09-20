@@ -50,6 +50,27 @@ void make_lattice_bases(
 
     plattices_vector_t result(index, slice.get_weight());
     slice_offset_t i_entry = 0;
+    constexpr size_t REDUCE_BATCH = 16;
+    plattice_info pending[REDUCE_BATCH];
+    slice_offset_t pending_entry[REDUCE_BATCH];
+    size_t npending = 0;
+    uint32_t const I = UINT32_C(1) << logI;
+
+    auto flush_pending = [&]() {
+        if (!npending)
+            return;
+        plattice_info::reduce_many(pending, npending, I);
+        for (size_t k = 0; k < npending; k++) {
+            plattice_info const & pli = pending[k];
+            plattice_enumerator ple(pli, pending_entry[k], logI, sublat);
+            if (!sublat.m)
+                ple.next(F);
+            if (LIKELY(!pli.is_discarded()))
+                result.push_back(ple);
+        }
+        npending = 0;
+    };
+
     for (auto const & e: slice) {
         increment_counter_on_dtor<slice_offset_t> const _dummy(i_entry);
         if (!Q.is_coprime_to(e.p))
@@ -61,16 +82,15 @@ void make_lattice_bases(
              i_root++) {
             fbroot_t const r = transformed.get_r(i_root);
             bool const proj = transformed.get_proj(i_root);
-            plattice_info const pli =
-                plattice_info(transformed.get_q(), r, proj, logI);
-            plattice_enumerator ple(pli, i_entry, logI, sublat);
-            // Skip (0,0) unless we have sublattices.
-            if (!sublat.m)
-                ple.next(F);
-            if (LIKELY(!pli.is_discarded()))
-                result.push_back(ple);
+            pending[npending] =
+                plattice_info::unreduced(transformed.get_q(), r, proj);
+            pending_entry[npending] = i_entry;
+            npending++;
+            if (npending == REDUCE_BATCH)
+                flush_pending();
         }
     }
+    flush_pending();
     /* This is moved, not copied. Note that V is a reference. */
     V[relative_index] = std::move(result);
 }

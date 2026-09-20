@@ -7,6 +7,10 @@
 #include <cstdio>
 #endif
 
+#ifdef HAVE_SSE2
+#include <emmintrin.h>
+#endif
+
 #include "las-where-am-i.hpp"
 #include "macros.h"
 
@@ -24,6 +28,12 @@ bucket_array_t<LEVEL, HINT>::push_update(int const i, update_t const & update,
 #endif
 #ifdef TRACE_K
     log_this_update(update, i, w);
+#endif
+#ifdef HAVE_SSE2
+    /* Prefetch the destination cache line. Consecutive FK hits rarely
+     * land in the same bucket, but this still hides some of the RFO
+     * latency of the 4-byte store that follows. */
+    _mm_prefetch((char *)bucket_write[i], _MM_HINT_T0);
 #endif
     *bucket_write[i]++ = update;
 }

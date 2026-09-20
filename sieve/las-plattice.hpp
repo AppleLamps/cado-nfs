@@ -100,6 +100,9 @@ class plattice_info
     uint32_t i1;
     uint32_t j1;
 
+    template<size_t N>
+    friend void reduce_plattice_simd(plattice_info * pli, uint32_t I);
+
   public:
     bool operator==(plattice_info const & o)
     {
@@ -175,6 +178,18 @@ class plattice_info
   public:
     uint32_t determinant() const { return mi0 * j1 + j0 * i1; };
 
+    /* Build the unreduced FK basis. Call reduce() / reduce_many() after. */
+    static plattice_info unreduced(unsigned long const q, unsigned long const r,
+                                   bool proj)
+    {
+        plattice_info p;
+        p.initial_basis(q, r, proj);
+        return p;
+    }
+
+    /* Reduce n consecutive lattices. Uses AVX2/AVX-512 when available. */
+    static void reduce_many(plattice_info * pli, size_t n, uint32_t I);
+
     /* it seems that we no longer discard any vector, in fact */
     bool is_discarded() const { return mi0 == 0 && j0 == 0; }
 
@@ -208,7 +223,7 @@ class plattice_info
         // return !(get_inc_step() >> logI);
     }
 
-  protected:
+  public:
     plattice_info()
         : mi0(0)
         , j0(0)
@@ -217,6 +232,7 @@ class plattice_info
     {
     }
 
+  protected:
     void reduce_with_vertical_vector(uint32_t I)
     {
         /* At this point, (mi0,j0) represents itself, i.e. a vector with

@@ -39,6 +39,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA.
 #include "fix-endianness.h"
 #include "gzip.h"
 #include "misc.h"
+#include "omp_proxy.h"
 #include "params.hpp"
 #include "sparse.h"
 #include "stats.h"
@@ -808,15 +809,22 @@ fasterVersion (typerow_t **newrows, const char *sparsename,
   colweight = (index_t*) malloc (ncols * sizeof(index_t));
   ASSERT_ALWAYS (colweight != NULL);
   memset (colweight, 0, ncols * sizeof(index_t));
-  for (index_t i = small_ncols = 0; i < small_nrows; i++)
-    for(unsigned int k = 1; k <= rowLength(newrows, i); k++)
+#pragma omp parallel for schedule(dynamic, 256)
+  for (index_t i = 0; i < small_nrows; i++) {
+    unsigned int const len = rowLength(newrows, i);
+    for(unsigned int k = 1; k <= len; k++)
     {
       index_t j = rowCell(newrows[i], k);
-      small_ncols += (colweight[j] == 0);
+#pragma omp atomic
       colweight[j] ++;
     }
+  }
   /* small_ncols is the number of columns with non-empty weight,
      i.e., the number of columns of the final matrix */
+  small_ncols = 0;
+#pragma omp parallel for reduction(+:small_ncols)
+  for (index_t j = 0; j < ncols; j++)
+    small_ncols += (colweight[j] != 0);
 
 #if defined FOR_DL && defined STAT_DL
   index_t count[11] = {0,0,0,0,0,0,0,0,0,0,0};
